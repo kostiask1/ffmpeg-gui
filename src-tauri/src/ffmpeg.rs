@@ -38,40 +38,60 @@ fn companion_probe(ffmpeg: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(filename))
 }
 
-pub fn detect(custom: Option<&str>) -> FfmpegStatus {
-    let executable = custom.map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(if cfg!(windows) {
-            "ffmpeg.exe"
-        } else {
-            "ffmpeg"
-        })
-    });
-    let Some(version) = validate(&executable) else {
-        return FfmpegStatus {
-            found: false,
-            ffmpeg_path: None,
-            ffprobe_path: None,
-            version: None,
-            error: Some("FFmpeg was not found".into()),
-        };
-    };
+fn inspect(executable: PathBuf, source: &str) -> Option<FfmpegStatus> {
+    let version = validate(&executable)?;
     let probe = companion_probe(&executable);
-    if validate(&probe).is_none() {
-        return FfmpegStatus {
-            found: false,
-            ffmpeg_path: Some(executable.to_string_lossy().into()),
-            ffprobe_path: None,
-            version: Some(version),
-            error: Some("ffprobe was not found".into()),
-        };
-    }
-    FfmpegStatus {
+    validate(&probe)?;
+    Some(FfmpegStatus {
         found: true,
+        source: Some(source.into()),
         ffmpeg_path: Some(executable.to_string_lossy().into()),
         ffprobe_path: Some(probe.to_string_lossy().into()),
         version: Some(version),
         error: None,
+    })
+}
+
+fn bundled_executable() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let executable_directory = executable.parent()?;
+    let sidecar_directory = if executable_directory.ends_with("deps") {
+        executable_directory.parent()?
+    } else {
+        executable_directory
+    };
+    let candidate = sidecar_directory.join(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
+    candidate.exists().then_some(candidate)
+}
+
+pub fn detect(custom: Option<&str>) -> FfmpegStatus {
+    if let Some(custom_path) = custom {
+        if let Some(status) = inspect(PathBuf::from(custom_path), "custom") {
+            return status;
+        }
     }
+    if let Some(executable) = bundled_executable() {
+        if let Some(status) = inspect(executable, "bundled") {
+            return status;
+        }
+    }
+    let path_executable = PathBuf::from(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
+    inspect(path_executable, "path").unwrap_or(FfmpegStatus {
+        found: false,
+        source: None,
+        ffmpeg_path: None,
+        ffprobe_path: None,
+        version: None,
+        error: Some("FFmpeg was not found".into()),
+    })
 }
 
 pub fn stream_copy_safe(inputs: &[AudioFileInfo], job: &ProcessingJob) -> bool {

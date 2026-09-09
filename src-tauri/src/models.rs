@@ -50,6 +50,7 @@ impl Default for AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct FfmpegStatus {
     pub found: bool,
+    pub source: Option<String>,
     pub ffmpeg_path: Option<String>,
     pub ffprobe_path: Option<String>,
     pub version: Option<String>,

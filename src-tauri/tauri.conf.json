@@ -25,6 +25,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": ["third-party/ffmpeg/*"],
     "shortDescription": "Mix and concatenate large audio files locally",
     "category": "Music"
   }

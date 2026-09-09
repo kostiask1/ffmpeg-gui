@@ -310,7 +310,10 @@ function App() {
             <AlertCircle />
             <div>
               <strong>FFmpeg was not found</strong>
-              <span>Install it from PATH or select ffmpeg.exe manually.</span>
+              <span>
+                The bundled copy is unavailable. Reinstall Audio Forge or select
+                ffmpeg.exe manually.
+              </span>
             </div>
             <button className="button secondary" onClick={refreshFfmpeg}>
               <RefreshCw size={16} />
@@ -927,7 +930,12 @@ function SettingsDialog({
           <label>FFmpeg path</label>
           <div className="path-row">
             <input
-              value={draft.ffmpegPath ?? "Auto detected from PATH"}
+              value={
+                draft.ffmpegPath ??
+                (status.source === "bundled"
+                  ? "Bundled FFmpeg (automatic)"
+                  : "Auto detected from PATH")
+              }
               readOnly
               className={!draft.ffmpegPath ? "muted-value" : ""}
             />
@@ -941,7 +949,9 @@ function SettingsDialog({
             <span>
               <strong>
                 {status.found
-                  ? "FFmpeg detected"
+                  ? status.source === "bundled"
+                    ? "Bundled FFmpeg detected"
+                    : "FFmpeg detected"
                   : status.error || "FFmpeg was not found"}
               </strong>
               <small>{status.version || status.ffmpegPath}</small>
@@ -963,7 +973,7 @@ function SettingsDialog({
                 void check(null);
               }}
             >
-              Use PATH auto detection
+              Use bundled automatic detection
             </button>
           )}
         </div>
@@ -1009,7 +1019,14 @@ function SettingsDialog({
           <button
             className="button primary"
             disabled={!status.found}
-            onClick={() => onSave(draft, status)}
+            onClick={() =>
+              onSave(
+                draft.ffmpegPath && status.source !== "custom"
+                  ? { ...draft, ffmpegPath: null }
+                  : draft,
+                status,
+              )
+            }
           >
             Save settings
           </button>

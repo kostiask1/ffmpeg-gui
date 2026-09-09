@@ -5,3 +5,5 @@ src-tauri/core-tests/target/
 .idea/
 .vscode/
 *.partial.*
+src-tauri/binaries/*.exe
+src-tauri/binaries/.ffmpeg-version.json

@@ -30,6 +30,7 @@ export interface AppSettings {
 
 export interface FFmpegStatus {
   found: boolean;
+  source?: "bundled" | "custom" | "path";
   ffmpegPath?: string;
   ffprobePath?: string;
   version?: string;

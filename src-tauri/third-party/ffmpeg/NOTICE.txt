@@ -1,0 +1,12 @@
+Audio Forge bundles unmodified FFmpeg and ffprobe executables from the
+BtbN/FFmpeg-Builds project.
+
+Build: FFmpeg n8.1.2-51-g7ba069f4f1, Windows x86_64, LGPL static variant
+Build release: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-08-23-15
+Build scripts: https://github.com/BtbN/FFmpeg-Builds
+FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/7ba069f4f1
+FFmpeg project: https://ffmpeg.org/
+
+The preparation script verifies the downloaded archive using its pinned
+SHA-256 digest and copies the license supplied with that build into this
+directory before packaging.
