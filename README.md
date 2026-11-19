@@ -1,133 +1,160 @@
 # Audio Forge
 
-Audio Forge is a Windows-first, fully local desktop application for mixing and concatenating audio with bundled FFmpeg and ffprobe sidecars. It uses Tauri 2, React, TypeScript, Vite, and Rust. Audio data never enters JavaScript memory and is never uploaded, so multi-gigabyte files are processed with FFmpeg's normal streaming I/O. End users only need to run the Audio Forge installer; a separate FFmpeg installation is not required.
+**Audio Forge** — локальний десктопний застосунок для Windows (Tauri 2, React, TypeScript, Vite, Rust) для зведення, склеювання та багатодоріжкового розпізнавання мовлення (транскрибції) аудіофайлів без завантаження даних у хмару.
 
-## Features
+Обробка аудіо відбувається потоково через вбудовані `ffmpeg` та `ffprobe`, а транскрибція виконується локально на вашому ПК (GPU NVIDIA CUDA або CPU) за допомогою ШІ-моделі **`ihnatov-yuri/parakeet-tdt-0.6b-v3-uk`**.
 
-- Uses bundled `ffmpeg` and `ffprobe` by default, with persistent custom executable and `PATH` fallbacks.
-- Imports multiple files through a native dialog or OS drag and drop, probes metadata, and retains only their original paths.
-- Reorders files with drag and drop or accessible up/down controls.
-- Mixes all sources from time zero with `amix`, normalization, and longest/shortest/first duration policies.
-- Concatenates in visible order with Auto, Stream Copy, and Re-encode modes.
-- Auto stream copy is limited to compatible FLAC inputs and FLAC output; other jobs are encoded.
-- Writes FLAC (compression 0–12) or WAV (16-bit PCM, 24-bit PCM, or 32-bit float).
-- Supports optional output sample rate and mono/stereo conversion.
-- Parses machine-readable FFmpeg progress, reports time/speed/ETA, and supports cancellation.
-- Writes to `name.partial.ext`, then atomically renames after success. Partial outputs and concat lists are cleaned after failure or cancellation.
-- Prompts before replacement, exposes full FFmpeg logs, and can copy the exact executable/argument list.
+---
 
-## Development prerequisites
+## Основні можливості
 
-End users have no prerequisites beyond supported Windows and the Audio Forge installer. To work from source, install:
+- **Імпорт та інспекція файлів:** додавання через діалог або перетягування (drag-and-drop) файлів FLAC, WAV, MP3, M4A, AAC, OGG, Opus, WMA; перевірка метаданих через `ffprobe` (тривалість, кодек, частота дискретизації, канали, розмір) із захистом від дублювання при перетягуванні та зміною порядку доріжок.
+- **Mix / Overlay (Зведення):** накладання всіх доріжок з `0:00` (`amix`) з вибором тривалості результату (`longest`, `shortest`, `first`).
+- **Concatenate (Склеювання):** послідовне об'єднання доріжок у режимах **Auto** (lossless `Stream Copy` для сумісних FLAC-потоків із виправленням `STREAMINFO`), **Stream Copy** або **Re-encode**.
+- **Експорт аудіо:** збереження у **FLAC** (рівень стиснення `0–12`) або **WAV** (`16-bit PCM`, `24-bit PCM`, `32-bit float`) з опціональною зміною частоти дискретизації та кількості каналів.
+- **Transcribe (Parakeet) — багатодоріжкова транскрибція:**
+  - Призначення імені мовця (`Мовець 1`, `Мовець 2`, …) та вибір мови окремо для кожного аудіофайлу (`Українська (UK)`, `Авто (UK + EN)`, `English (EN)`, `Тільки укр.`, `Polski (PL)`, `Deutsch (DE)`, `Français (FR)`, `Español (ES)`).
+  - Окрема транскрибція кожної доріжки зі збереженням індивідуального файлу (`<назва>_<NN>_<мовець>_<файл>.<ext>`).
+  - **Опціональне об'єднання:** за замовчуванням зберігаються окремі файли по мовцях; якщо увімкнути опцію об'єднання, додатково створюється спільний файл із хронологічним сортуванням реплік за часовими маркерами.
+  - Підтримка форматів **`TXT`** (`[HH:MM:SS.mmm - HH:MM:SS.mmm] Мовець: текст`), **`SRT`** (субтитри) та **`JSON`** (структуровані сегменти з метаданими).
+  - Потокове декодування аудіо через `ffmpeg` (мінімальне споживання RAM навіть на багатогодинних записах), пропуск фрагментів чистої тиші, прискорення на GPU через `torch.bfloat16`.
+- **Контроль виконання:** прогрес у реальному часі, живий лог транскрибції з автопрокруткою, індикатори завантаження для всіх дій, коректне скасування процесів разом із дочірніми процесами, безпечний запис через `.partial` і попередження перед перезаписом файлів.
 
-1. Node.js 20 or newer.
-2. The Rust stable MSVC toolchain through [rustup](https://rustup.rs/).
-3. Microsoft Visual Studio C++ Build Tools with the Windows SDK and **Desktop development with C++** workload.
+---
 
-Confirm the development tools are available:
+## Вимоги до системи
+
+### 1. Для роботи з аудіо (Mix / Concatenate)
+
+- **ОС:** Windows 10 або Windows 11 (64-розрядна, `x64`).
+- **Microsoft Edge WebView2 Runtime:** вбудований у Windows 11; на Windows 10 за відсутності встановлюється інсталятором автоматично.
+- **FFmpeg:** не потребує окремого встановлення при використанні інсталятора (`ffmpeg.exe` та `ffprobe.exe` вже входять у пакет).
+
+### 2. Додатково для ШІ-транскрибції (Transcribe)
+
+- **Python 3** (рекомендовано 3.10–3.14; за замовчуванням застосунок шукає `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`, інші версії в `Programs\Python\`, або `python.exe` у `PATH`).
+- **PyTorch (`torch`):** має бути встановлений у Python. Для швидкої роботи на GPU встановіть CUDA-збірку PyTorch під вашу версію драйвера NVIDIA.
+- **Python-бібліотеки для моделі:** `transformers`, `accelerate`, `soundfile` (перевіряються та автоматично встановлюються скриптом під час інсталяції, якщо знайдено Python).
+- **Апаратні вимоги для транскрибції:**
+  - _Рекомендовано:_ відеокарта NVIDIA з підтримкою CUDA (від 4–6 ГБ VRAM, з `bfloat16` модель споживає ~1.5–2 ГБ VRAM).
+  - _Мінімально:_ сучасний процесор (CPU-режим працює повільніше) та від 8 ГБ RAM.
+- **Дисковий простір:** ~3 ГБ вільного місця для кешу моделі `ihnatov-yuri/parakeet-tdt-0.6b-v3-uk` (`model.safetensors` займає ~2.5 ГБ) та ~250 МБ для самої програми з FFmpeg.
+- **Інтернет:** потрібен лише при першому завантаженні моделі (якщо вона ще не кешована локально).
+
+### 3. Для розробників (збірка з вихідного коду)
+
+- **Node.js** 20+ та `npm`.
+- **Rust toolchain** через [rustup](https://rustup.rs/) (`stable-x86_64-pc-windows-msvc` або `stable-x86_64-pc-windows-gnu` із відповідним C/C++ лінкером).
+
+---
+
+## Як встановити
+
+### Варіант 1: Готовий інсталятор (рекомендовано)
+
+1. Запустіть **`artifacts\Audio Forge_0.1.0_x64-setup.exe`**.
+2. Дотримуйтесь підказок майстра встановлення.
+3. Інсталятор автоматично:
+   - встановить **Audio Forge** разом із вбудованими `ffmpeg.exe` та `ffprobe.exe`;
+   - перевірить, чи вже встановлена ШІ-модель `ihnatov-yuri/parakeet-tdt-0.6b-v3-uk` у локальному кеші (`%USERPROFILE%\.cache\huggingface\hub\...` або `%LOCALAPPDATA%\Audio Forge\models\parakeet-tdt-0.6b-v3-uk`);
+   - за відсутності моделі запустить `third-party\parakeet\ensure-parakeet-model.ps1`, доустановить `transformers`, `accelerate`, `soundfile` (за наявності Python) та завантажить файли моделі в кеш Hugging Face.
+
+### Варіант 2: Портативний запуск (`audio-forge.exe`)
+
+- Ви можете запустити **`artifacts\audio-forge.exe`** напряму без інсталяції.
+- Для роботи цього варіанту `ffmpeg.exe` та `ffprobe.exe` мають бути поруч із `audio-forge.exe`, у системному `PATH`, або вказані вручну через **Settings → FFmpeg path**.
+
+### Варіант 3: Ручне налаштування Python та ШІ-моделі (якщо Python встановлювався після інсталятора)
+
+1. Встановіть **Python 3** (наприклад, з python.org) та **PyTorch** із підтримкою CUDA (див. [pytorch.org](https://pytorch.org/get-started/locally/)).
+2. Встановіть залежності та завантажте модель (або запустіть готовий скрипт з інсталятора):
+   ```powershell
+   pip install transformers accelerate soundfile
+   powershell -NoProfile -ExecutionPolicy Bypass -File "src-tauri\third-party\parakeet\ensure-parakeet-model.ps1"
+   ```
+
+---
+
+## Поради щодо використання транскрибції
+
+- **Ізольовані доріжки vs. один змішаний файл:** для найкращої якості використовуйте **окремі ізольовані аудіодоріжки** (по одній на кожного мовця — наприклад, окремі записи з Discord/OBS/Zoom). Модель не виконує діаризацію в одному змішаному файлі, а на окремих доріжках голоси не перекриваються при одночасному мовленні, точніше визначається тиша та кожній репліці гарантовано призначається правильний мовець і мова.
+- **Налаштування об'єднання:** за замовчуванням створюється окремий файл для кожної доріжки. Щоб отримати ще й спільний хронологічно зведений діалог, увімкніть перемикач **«Об'єднати всі доріжки у спільний файл за часовими маркерами»** у блоці **02 · METHOD**.
+
+---
+
+## Розробка та збірка з вихідного коду
 
 ```powershell
-rustc --version
-cargo --version
-```
-
-## Development
-
-```powershell
+# Встановлення залежностей фронтенду
 npm install
+
+# Запуск у режимі розробки (при першому запуску підготує бінарники FFmpeg)
 npm run tauri dev
 ```
 
-The `pretauri` lifecycle script downloads the pinned Windows x64 LGPL FFmpeg build on the first run, verifies its SHA-256 digest, and prepares sidecars for both MSVC and GNU Rust targets. Later runs reuse the verified local files. It can also be run explicitly:
+### Корисні команди перевірки
 
 ```powershell
+# Підготовка бінарників FFmpeg вручну
 npm run prepare:ffmpeg
-```
 
-Frontend-only checks:
-
-```powershell
-npm run lint
+# Фронтенд: тести, лінтинг, форматування, збірка
 npm test
+npm run lint
 npm run format:check
-```
+npm run build
 
-Rust checks:
-
-```powershell
+# Rust: форматування та юніт-тести
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo test --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/core-tests/Cargo.toml
-cargo test --manifest-path src-tauri/core-tests/Cargo.toml -- --ignored
 ```
 
-## Windows build
-
-Create the optimized frontend and Tauri installers with:
+### Продакшн-збірка інсталятора
 
 ```powershell
 npm run tauri build
 ```
 
-Artifacts are written below `src-tauri\target\release\bundle`. Tauri may produce MSI and NSIS packages depending on the installed Windows tooling.
+Готові пакети генеруються в `src-tauri\target\release\bundle` (або в `CARGO_TARGET_DIR`, якщо задано змінну середовища). Для проєкту також збережено перевірені бінарники та контрольні суми в каталозі `artifacts\`.
 
-A verified, self-contained x64 NSIS package from the current source is included at `artifacts\Audio Forge_0.1.0_x64-setup.exe`.
-Its SHA-256 checksum is recorded in `artifacts\SHA256SUMS.txt`.
+---
 
-## Project structure
+## Структура проєкту
 
 ```text
 src/
-  App.tsx          React UI, native dialogs, app state, and Tauri event wiring
-  types.ts         Typed frontend processing and metadata models
-  utils.ts         Display and duration helpers
-  styles.css       Offline, responsive single-window interface
-src-tauri/src/
-  commands.rs      Stable Tauri command/event boundary and process lifecycle
-  ffmpeg.rs        Safe argument-array construction and concat-copy decisions
-  ffprobe.rs       ffprobe JSON parsing and filesystem metadata
-  flac.rs          STREAMINFO repair after lossless FLAC stream concatenation
-  models.rs        Serializable backend models
-  progress.rs      Machine-readable FFmpeg progress parsing
-  settings.rs      Local JSON settings persistence
+  App.tsx                              Інтерфейс React, drag-and-drop, стан завдань, живий лог
+  types.ts                             Типи даних завдань, метаданих, подій прогресу та логів
+  utils.ts / utils.test.ts             Допоміжні функції тривалості, шляхів та дедуплікації
+  styles.css                           Стилі інтерфейсу
 scripts/
-  prepare-ffmpeg.ps1  Verified sidecar download and target preparation
-src-tauri/binaries/   Generated FFmpeg/ffprobe sidecars (gitignored)
-src-tauri/third-party/ffmpeg/  Bundled license and source notice
+  prepare-ffmpeg.ps1                   Завантаження та SHA-256 перевірка FFmpeg sidecar-бінарників
+  transcribe_worker.py                 Потоковий Python-воркер транскрибції та хронологічного зведення
+src-tauri/src/
+  commands.rs                          Асинхронні Tauri-команди, життєвий цикл процесів, стрім логів
+  ffmpeg.rs / ffprobe.rs / flac.rs     Конструктор FFmpeg-аргументів, метадані, ремонт FLAC STREAMINFO
+  transcribe.rs                        Пошук Python, підготовка JSON-завдань та шляхів результатів
+  models.rs / progress.rs / settings.rs Серіалізація моделей, парсинг прогресу, збереження налаштувань
+src-tauri/windows/hooks.nsh            NSIS post-install хук для автоматичної перевірки/встановлення моделі
+src-tauri/third-party/
+  ffmpeg/                              Ліцензія LGPLv3 та NOTICE.txt для FFmpeg
+  parakeet/                            NOTICE.txt та скрипт ensure-parakeet-model.ps1
 ```
 
-The frontend sends a typed `ProcessingJob`; it never constructs raw FFmpeg arguments. The operation field is an extensible string boundary so a future `multichannel` operation can receive its own builder without changing the UI/backend protocol shape.
+---
 
-## FFmpeg detection
+## Ліцензії та авторські права
 
-At startup the backend loads application settings and validates executables with `-version`. Resolution order is: a valid custom executable, the FFmpeg and ffprobe sidecars installed beside Audio Forge, and finally Windows `PATH`. An invalid custom path therefore cannot prevent the bundled copy from working. Detection can be retried, and advanced users can still browse to another `ffmpeg.exe`. The selected custom location is saved under Tauri's per-user application configuration directory.
+### Модель розпізнавання мовлення
 
-Every external process is started directly with an executable plus an argument array. User paths and names are never interpolated into a shell command, which preserves spaces, Ukrainian/Cyrillic text, quotes, and other Windows path characters.
+Локальна транскрибція базується на моделі [`ihnatov-yuri/parakeet-tdt-0.6b-v3-uk`](https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk):
 
-## Bundled FFmpeg and licensing
+> **Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)**
 
-The preparation script downloads an immutable BtbN Windows x64 LGPL static build of FFmpeg n8.1.2, verifies the pinned archive checksum, and gives each executable the target-triple filename required by Tauri sidecars. The large generated executables are intentionally gitignored and reproducible from the script. Tauri packages only the pair matching the selected Windows build target.
+- Репозиторій моделі: https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk
+- Базова модель: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+- Ліцензія: [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
 
-The installer includes the build's LGPLv3 license and `NOTICE.txt` with the exact build release, FFmpeg source revision, and build-script links. Audio Forge invokes the unmodified executables as separate processes; it does not link FFmpeg libraries into the application.
+### Вбудований FFmpeg
 
-## Transcription model & attribution
-
-Local speech-to-text transcription uses [`ihnatov-yuri/parakeet-tdt-0.6b-v3-uk`](https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk):
-
-> Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)
-
-The Windows NSIS installer checks whether the model is already cached locally and, if missing, runs `third-party/parakeet/ensure-parakeet-model.ps1` to download and prepare it alongside `third-party/parakeet/NOTICE.txt`.
-
-## Auto concatenation decision
-
-Auto mode chooses concat demuxer stream copy only when output is FLAC and every input audio stream is FLAC with the same sample rate, channel count, channel layout, and sample format. After copying, Audio Forge updates the output FLAC STREAMINFO sample count and clears the now-inapplicable per-file MD5 without decoding the audio. Otherwise it uses FFmpeg's concat filter and re-encodes with the chosen output settings. Explicit Stream Copy returns a validation error rather than silently copying incompatible inputs.
-
-## Current limitations and TODOs
-
-- The MVP targets Windows; other desktop platforms are not tested.
-- Bundled sidecars currently target Windows x64. ARM64 would require another verified FFmpeg asset and target-triple files.
-- Only FLAC and WAV outputs are exposed. MP3, AAC/M4A, and Opus can be added through the encoding model.
-- Mix rows do not yet expose gain/mute controls. Per-track `volume` and `muted` values already exist in the processing model and FFmpeg filter builder, ready for row controls in a later UI update.
-- No waveform, playback, trimming, crossfade, or multichannel routing is included.
-- Input inspection is performed as one batch: if one selected file is invalid, that import reports the error and does not append the batch.
-- Stream-copy safety is intentionally conservative; files outside the exact metadata match are re-encoded.
+Програма використовує немодифіковані статичні збірки `ffmpeg` та `ffprobe` проєкту **BtbN/FFmpeg-Builds** (версія `n8.1.2-51-g7ba069f4f1`, Windows `x86_64`, LGPL). Відповідні ліцензійні файли постачаються разом з інсталятором у `third-party\ffmpeg\LICENSE.txt` та `third-party\ffmpeg\NOTICE.txt`.
