@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -13,15 +13,19 @@ import {
   ChevronDown,
   CircleStop,
   FileAudio,
+  FileText,
   FolderOpen,
   GripVertical,
+  Languages,
   ListMusic,
   LoaderCircle,
+  Mic,
   Plus,
   RefreshCw,
   Settings,
   SlidersHorizontal,
   Trash2,
+  User,
   X,
 } from "lucide-react";
 import type {
@@ -34,13 +38,18 @@ import type {
   ProcessingFailed,
   ProcessingFinished,
   ProcessingJob,
+  ProcessingLog,
   ProcessingProgress,
   ProcessingStarted,
+  TranscriptFormat,
+  TranscriptionLanguage,
   WavDepth,
 } from "./types";
 import {
+  dedupeIncomingPaths,
   formatDuration,
   formatSize,
+  mergeUniqueFiles,
   parentDirectory,
   quoteCommandPart,
   totalDuration,
@@ -54,18 +63,46 @@ const defaultSettings: AppSettings = {
   lastOutputFolder: null,
 };
 
+const PARAKEET_MODEL_ID = "ihnatov-yuri/parakeet-tdt-0.6b-v3-uk";
+const PARAKEET_ATTRIBUTION =
+  "Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)";
+
+const LANGUAGE_OPTIONS: Array<{
+  value: TranscriptionLanguage;
+  label: string;
+}> = [
+  { value: "uk", label: "Українська (UK)" },
+  { value: "auto", label: "Авто (UK + EN)" },
+  { value: "en", label: "English (EN)" },
+  { value: "uk_strict", label: "Тільки укр." },
+  { value: "pl", label: "Polski (PL)" },
+  { value: "de", label: "Deutsch (DE)" },
+  { value: "fr", label: "Français (FR)" },
+  { value: "es", label: "Español (ES)" },
+];
+
 type RunState = "idle" | "running" | "success" | "failed" | "cancelled";
 
 function App() {
   const [files, setFiles] = useState<AudioFileInfo[]>([]);
-  const [probing, setProbing] = useState(false);
+  const [probingCount, setProbingCount] = useState(0);
+  const probing = probingCount > 0;
   const [probeError, setProbeError] = useState("");
   const [ffmpeg, setFfmpeg] = useState<FFmpegStatus>({ found: false });
+  const [detectingFfmpeg, setDetectingFfmpeg] = useState(true);
   const [settings, setSettings] = useState(defaultSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [operation, setOperation] = useState<"mix" | "concatenate">("mix");
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [operation, setOperation] = useState<
+    "mix" | "concatenate" | "transcribe"
+  >("mix");
   const [mixDuration, setMixDuration] = useState<MixDuration>("longest");
   const [concatMode, setConcatMode] = useState<ConcatMode>("auto");
+  const [defaultLanguage, setDefaultLanguage] =
+    useState<TranscriptionLanguage>("uk");
+  const [transcriptFormat, setTranscriptFormat] =
+    useState<TranscriptFormat>("txt");
+  const [mergeOutputs, setMergeOutputs] = useState(false);
   const [format, setFormat] = useState<OutputFormat>("flac");
   const [flacCompression, setFlacCompression] = useState(8);
   const [wavCodec, setWavCodec] = useState<WavDepth>("pcm_s24le");
@@ -75,15 +112,31 @@ function App() {
   const [outputName, setOutputName] = useState("combined");
   const [outputDirectory, setOutputDirectory] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
+  const [startingJob, setStartingJob] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<ProcessingProgress | null>(null);
+  const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const [runningCommand, setRunningCommand] = useState<string[]>([]);
   const [result, setResult] = useState<ProcessingFinished | null>(null);
   const [failure, setFailure] = useState<ProcessingFailed | null>(null);
   const [overwriteJob, setOverwriteJob] = useState<ProcessingJob | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const pendingPathsRef = useRef<Set<string>>(new Set());
+  const openOutputFolderRef = useRef(settings.openOutputFolder);
+  openOutputFolderRef.current = settings.openOutputFolder;
+  const activeJobIdRef = useRef<string | null>(null);
 
   const refreshFfmpeg = useCallback(async () => {
-    setFfmpeg(await invoke<FFmpegStatus>("detect_ffmpeg"));
+    setDetectingFfmpeg(true);
+    try {
+      setFfmpeg(await invoke<FFmpegStatus>("detect_ffmpeg"));
+    } finally {
+      setDetectingFfmpeg(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -95,21 +148,24 @@ function App() {
 
   const addPaths = useCallback(
     async (paths: string[]) => {
-      const unique = paths.filter(
-        (path) =>
-          !files.some(
-            (file) =>
-              file.path.toLocaleLowerCase() === path.toLocaleLowerCase(),
-          ),
+      const unique = dedupeIncomingPaths(
+        paths,
+        filesRef.current,
+        pendingPathsRef.current,
       );
       if (!unique.length) return;
-      setProbing(true);
+      for (const path of unique) {
+        pendingPathsRef.current.add(path.toLocaleLowerCase());
+      }
+      setProbingCount((c) => c + 1);
       setProbeError("");
       try {
         const added = await invoke<AudioFileInfo[]>("probe_files", {
           paths: unique,
         });
-        setFiles((current) => [...current, ...added]);
+        setFiles((current) =>
+          mergeUniqueFiles(current, added, defaultLanguage),
+        );
         if (!outputDirectory && added[0]) {
           const remembered = settings.rememberLastOutputFolder
             ? settings.lastOutputFolder
@@ -119,53 +175,109 @@ function App() {
       } catch (error) {
         setProbeError(String(error));
       } finally {
-        setProbing(false);
+        for (const path of unique) {
+          pendingPathsRef.current.delete(path.toLocaleLowerCase());
+        }
+        setProbingCount((c) => Math.max(0, c - 1));
       }
     },
-    [files, outputDirectory, settings],
+    [defaultLanguage, outputDirectory, settings],
   );
 
+  const addPathsRef = useRef(addPaths);
+  addPathsRef.current = addPaths;
+
   useEffect(() => {
+    let disposed = false;
     const unlisteners: Array<() => void> = [];
-    void getCurrentWebviewWindow()
-      .onDragDropEvent((event) => {
-        if (event.payload.type === "drop") void addPaths(event.payload.paths);
-      })
-      .then((unlisten) => unlisteners.push(unlisten));
-    void listen<ProcessingProgress>("processing-progress", ({ payload }) => {
-      setProgress(payload);
-    }).then((unlisten) => unlisteners.push(unlisten));
-    void listen<ProcessingFinished>("processing-finished", ({ payload }) => {
-      setRunState("success");
-      setResult(payload);
-      setProgress(
-        (current) =>
-          current && {
-            ...current,
-            percent: 100,
-            processedSeconds: current.totalSeconds,
-          },
-      );
-      if (settings.openOutputFolder)
-        void openPath(parentDirectory(payload.outputPath));
-    }).then((unlisten) => unlisteners.push(unlisten));
-    void listen<ProcessingFailed>("processing-failed", ({ payload }) => {
-      setRunState(payload.cancelled ? "cancelled" : "failed");
-      setFailure(payload.cancelled ? null : payload);
-    }).then((unlisten) => unlisteners.push(unlisten));
-    void listen("close-requested-during-processing", () => {
-      if (
-        window.confirm(
-          "Audio processing is still running. Cancel it and close the application?",
-        )
-      ) {
-        void invoke("request_app_exit");
-      }
-    }).then((unlisten) => unlisteners.push(unlisten));
-    return () => unlisteners.forEach((unlisten) => unlisten());
-  }, [addPaths, settings.openOutputFolder]);
+    const register = (promise: Promise<() => void>) => {
+      void promise.then((unlisten) => {
+        if (disposed) unlisten();
+        else unlisteners.push(unlisten);
+      });
+    };
+
+    register(
+      getCurrentWebviewWindow().onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsDragOver(true);
+        } else if (event.payload.type === "leave") {
+          setIsDragOver(false);
+        } else if (event.payload.type === "drop") {
+          setIsDragOver(false);
+          if (event.payload.paths.length > 0) {
+            void addPathsRef.current(event.payload.paths);
+          }
+        }
+      }),
+    );
+    register(
+      listen<ProcessingProgress>("processing-progress", ({ payload }) => {
+        if (activeJobIdRef.current && payload.jobId !== activeJobIdRef.current)
+          return;
+        setProgress(payload);
+      }),
+    );
+    register(
+      listen<ProcessingLog>("processing-log", ({ payload }) => {
+        if (activeJobIdRef.current && payload.jobId !== activeJobIdRef.current)
+          return;
+        setLiveLogs((current) => {
+          const next = [...current, payload.line];
+          return next.length > 1000 ? next.slice(next.length - 1000) : next;
+        });
+      }),
+    );
+    register(
+      listen<ProcessingFinished>("processing-finished", ({ payload }) => {
+        if (activeJobIdRef.current && payload.jobId !== activeJobIdRef.current)
+          return;
+        activeJobIdRef.current = null;
+        setCancelling(false);
+        setRunState("success");
+        setResult(payload);
+        setProgress(
+          (current) =>
+            current && {
+              ...current,
+              percent: 100,
+              processedSeconds: current.totalSeconds,
+            },
+        );
+        if (openOutputFolderRef.current)
+          void openPath(parentDirectory(payload.outputPath));
+      }),
+    );
+    register(
+      listen<ProcessingFailed>("processing-failed", ({ payload }) => {
+        if (activeJobIdRef.current && payload.jobId !== activeJobIdRef.current)
+          return;
+        activeJobIdRef.current = null;
+        setCancelling(false);
+        setRunState(payload.cancelled ? "cancelled" : "failed");
+        setFailure(payload.cancelled ? null : payload);
+      }),
+    );
+    register(
+      listen("close-requested-during-processing", () => {
+        if (
+          window.confirm(
+            "Audio processing is still running. Cancel it and close the application?",
+          )
+        ) {
+          void invoke("request_app_exit");
+        }
+      }),
+    );
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, []);
 
   const chooseFiles = async () => {
+    if (probing || runState === "running") return;
     const selected = await open({
       multiple: true,
       filters: [
@@ -204,6 +316,12 @@ function App() {
     mix: { duration: mixDuration },
     concat: { mode: concatMode },
     encoding: { format, flacCompression, wavCodec, sampleRate, channels },
+    transcription: {
+      modelId: PARAKEET_MODEL_ID,
+      defaultLanguage,
+      format: transcriptFormat,
+      mergeOutputs,
+    },
     outputDirectory,
     outputName: outputName.trim(),
     replaceExisting,
@@ -211,6 +329,8 @@ function App() {
 
   const runJob = async (job: ProcessingJob) => {
     setOverwriteJob(null);
+    activeJobIdRef.current = job.id;
+    setCancelling(false);
     setRunState("running");
     setProgress({
       jobId: job.id,
@@ -219,6 +339,7 @@ function App() {
       percent: 0,
       elapsedSeconds: 0,
     });
+    setLiveLogs([]);
     setFailure(null);
     setResult(null);
     setRunningCommand([]);
@@ -236,6 +357,7 @@ function App() {
         await invoke("save_settings", { value: next });
       }
     } catch (error) {
+      activeJobIdRef.current = null;
       setRunState("failed");
       setFailure({
         jobId: job.id,
@@ -248,14 +370,42 @@ function App() {
   };
 
   const start = async () => {
-    const job = buildJob();
-    if (await invoke<boolean>("destination_exists", { job }))
-      setOverwriteJob(job);
-    else await runJob(job);
+    setStartingJob(true);
+    try {
+      const job = buildJob();
+      if (await invoke<boolean>("destination_exists", { job })) {
+        setOverwriteJob(job);
+      } else {
+        await runJob(job);
+      }
+    } catch (error) {
+      setRunState("failed");
+      setFailure({
+        jobId: "startup",
+        message: String(error),
+        log: "",
+        command: [],
+        cancelled: false,
+      });
+    } finally {
+      setStartingJob(false);
+    }
   };
 
   const cancel = async () => {
-    await invoke("cancel_processing");
+    setCancelling(true);
+    try {
+      await invoke("cancel_processing");
+    } catch (error) {
+      setCancelling(false);
+      setFailure({
+        jobId: activeJobIdRef.current ?? "cancel",
+        message: String(error),
+        log: "",
+        command: [],
+        cancelled: false,
+      });
+    }
   };
 
   const valid =
@@ -266,6 +416,38 @@ function App() {
     !outputName.includes("/") &&
     !outputName.includes("\\");
   const command = result?.command ?? failure?.command ?? runningCommand;
+  const activeTaskLabel = cancelling
+    ? "Скасування…"
+    : startingJob
+      ? "Запуск завдання…"
+      : probing
+        ? "Читання файлів…"
+        : savingSettings
+          ? "Збереження налаштувань…"
+          : detectingFfmpeg
+            ? "Перевірка FFmpeg…"
+            : runState === "running"
+              ? operation === "transcribe"
+                ? "Транскрипція…"
+                : "Обробка аудіо…"
+              : null;
+
+  const updateTrack = (
+    index: number,
+    patch: Partial<Pick<AudioFileInfo, "speaker" | "language">>,
+  ) => {
+    setFiles((current) =>
+      current.map((item, idx) =>
+        idx === index ? { ...item, ...patch } : item,
+      ),
+    );
+  };
+
+  const applyLanguageToAll = () => {
+    setFiles((current) =>
+      current.map((item) => ({ ...item, language: defaultLanguage })),
+    );
+  };
 
   const move = (from: number, to: number) => {
     if (to < 0 || to >= files.length || from === to) return;
@@ -290,9 +472,21 @@ function App() {
           </div>
         </div>
         <div className="top-actions">
-          <span className={`status-pill ${ffmpeg.found ? "ready" : "missing"}`}>
+          {activeTaskLabel && (
+            <span className="status-pill busy" role="status" aria-live="polite">
+              <LoaderCircle size={13} className="spin" />
+              {activeTaskLabel}
+            </span>
+          )}
+          <span
+            className={`status-pill ${detectingFfmpeg ? "busy" : ffmpeg.found ? "ready" : "missing"}`}
+          >
             <span />
-            {ffmpeg.found ? "FFmpeg ready" : "FFmpeg not found"}
+            {detectingFfmpeg
+              ? "Checking FFmpeg…"
+              : ffmpeg.found
+                ? "FFmpeg ready"
+                : "FFmpeg not found"}
           </span>
           <button
             className="icon-button"
@@ -305,7 +499,7 @@ function App() {
       </header>
 
       <main>
-        {!ffmpeg.found && (
+        {!detectingFfmpeg && !ffmpeg.found && (
           <div className="ffmpeg-warning">
             <AlertCircle />
             <div>
@@ -315,8 +509,12 @@ function App() {
                 ffmpeg.exe manually.
               </span>
             </div>
-            <button className="button secondary" onClick={refreshFfmpeg}>
-              <RefreshCw size={16} />
+            <button
+              className="button secondary"
+              onClick={refreshFfmpeg}
+              disabled={detectingFfmpeg}
+            >
+              <RefreshCw size={16} className={detectingFfmpeg ? "spin" : ""} />
               Check again
             </button>
             <button
@@ -328,7 +526,9 @@ function App() {
           </div>
         )}
 
-        <section className="panel input-panel">
+        <section
+          className={`panel input-panel ${isDragOver ? "drag-over" : ""}`}
+        >
           <div className="section-heading">
             <div>
               <span className="eyebrow">01 · SOURCES</span>
@@ -339,7 +539,7 @@ function App() {
             {files.length > 0 && (
               <button
                 className="text-button danger"
-                disabled={runState === "running"}
+                disabled={runState === "running" || probing}
                 onClick={() => setFiles([])}
               >
                 <Trash2 size={15} />
@@ -348,21 +548,44 @@ function App() {
             )}
           </div>
           {files.length === 0 ? (
-            <div className="drop-zone" onClick={chooseFiles}>
+            <div
+              className={`drop-zone ${isDragOver ? "drag-over" : ""} ${probing ? "loading" : ""}`}
+              onClick={chooseFiles}
+            >
               <div className="drop-icon">
-                <FileAudio />
+                {probing ? <LoaderCircle className="spin" /> : <FileAudio />}
               </div>
-              <h3>Drop audio files here</h3>
-              <p>FLAC, WAV, MP3, AAC, Opus and other FFmpeg formats</p>
-              <button className="button primary" type="button">
-                <Plus size={17} />
-                Add files
+              <h3>
+                {probing
+                  ? "Читання аудіофайлів…"
+                  : isDragOver
+                    ? "Відпустіть файли для додавання"
+                    : "Drop audio files here"}
+              </h3>
+              <p>
+                {probing
+                  ? "Визначаємо тривалість і параметри потоків через ffprobe"
+                  : "FLAC, WAV, MP3, AAC, Opus and other FFmpeg formats"}
+              </p>
+              <button
+                className="button primary"
+                type="button"
+                disabled={probing}
+              >
+                {probing ? (
+                  <LoaderCircle size={17} className="spin" />
+                ) : (
+                  <Plus size={17} />
+                )}
+                {probing ? "Reading metadata…" : "Add files"}
               </button>
             </div>
           ) : (
             <>
               <div className="file-table-head">
                 <span>Name</span>
+                <span>Speaker</span>
+                <span>Language</span>
                 <span>Duration</span>
                 <span>Format</span>
                 <span>Sample rate</span>
@@ -376,7 +599,17 @@ function App() {
                     className={`file-row ${dragIndex === index ? "dragging" : ""}`}
                     key={file.path}
                     draggable={runState !== "running"}
-                    onDragStart={() => setDragIndex(index)}
+                    onDragStart={(e) => {
+                      if (
+                        (e.target as HTMLElement).closest(
+                          "input, select, button",
+                        )
+                      ) {
+                        e.preventDefault();
+                        return;
+                      }
+                      setDragIndex(index);
+                    }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => {
                       if (dragIndex !== null) move(dragIndex, index);
@@ -394,6 +627,36 @@ function App() {
                         <small title={file.path}>{file.path}</small>
                       </div>
                     </div>
+                    <div className="speaker-cell">
+                      <User size={13} className="cell-icon" />
+                      <input
+                        className="speaker-input"
+                        value={file.speaker}
+                        placeholder={`Мовець ${index + 1}`}
+                        aria-label={`Speaker for ${file.name}`}
+                        onChange={(e) =>
+                          updateTrack(index, { speaker: e.target.value })
+                        }
+                        disabled={runState === "running"}
+                      />
+                    </div>
+                    <select
+                      className="lang-select"
+                      value={file.language}
+                      aria-label={`Language for ${file.name}`}
+                      onChange={(e) =>
+                        updateTrack(index, {
+                          language: e.target.value as TranscriptionLanguage,
+                        })
+                      }
+                      disabled={runState === "running"}
+                    >
+                      {LANGUAGE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
                     <span>{formatDuration(file.duration)}</span>
                     <span className="codec-badge">
                       {file.codec.toUpperCase()}
@@ -492,6 +755,18 @@ function App() {
                   <small>Join tracks in the order shown above</small>
                 </div>
               </button>
+              <button
+                className={operation === "transcribe" ? "selected" : ""}
+                onClick={() => setOperation("transcribe")}
+                disabled={runState === "running"}
+              >
+                <span className="radio-dot" />
+                <Mic />
+                <div>
+                  <strong>Transcribe (Parakeet)</strong>
+                  <small>Per-track ASR merged by timestamps & speakers</small>
+                </div>
+              </button>
             </div>
             <div className="field operation-setting">
               {operation === "mix" ? (
@@ -508,7 +783,7 @@ function App() {
                     <option value="first">First track</option>
                   </select>
                 </>
-              ) : (
+              ) : operation === "concatenate" ? (
                 <>
                   <label>Concatenation mode</label>
                   <select
@@ -526,6 +801,62 @@ function App() {
                     streams.
                   </small>
                 </>
+              ) : (
+                <>
+                  <label>Мова файлів за замовчуванням</label>
+                  <div className="default-lang-row">
+                    <select
+                      value={defaultLanguage}
+                      onChange={(e) =>
+                        setDefaultLanguage(
+                          e.target.value as TranscriptionLanguage,
+                        )
+                      }
+                      disabled={runState === "running"}
+                    >
+                      {LANGUAGE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="button secondary compact-btn"
+                      onClick={applyLanguageToAll}
+                      disabled={files.length === 0 || runState === "running"}
+                    >
+                      <Languages size={14} />
+                      Застосувати до всіх доріжок
+                    </button>
+                  </div>
+                  <label className="merge-toggle">
+                    <input
+                      type="checkbox"
+                      checked={mergeOutputs}
+                      onChange={(e) => setMergeOutputs(e.target.checked)}
+                      disabled={runState === "running"}
+                    />
+                    <span>
+                      Об&apos;єднати всі доріжки у спільний файл за часовими
+                      маркерами
+                    </span>
+                  </label>
+                  <div className="model-badge">
+                    <Mic size={14} />
+                    <span>
+                      Модель: <code>{PARAKEET_MODEL_ID}</code>
+                    </span>
+                  </div>
+                  <div className="model-attribution">
+                    <span>{PARAKEET_ATTRIBUTION}</span>
+                  </div>
+                  <small>
+                    Кожна доріжка транскрибується окремо з позначенням мовця.
+                    Спільний об&apos;єднаний файл створюється лише коли
+                    увімкнено опцію вище.
+                  </small>
+                </>
               )}
             </div>
           </section>
@@ -540,14 +871,28 @@ function App() {
             <div className="output-grid">
               <div className="field">
                 <label>Format</label>
-                <select
-                  value={format}
-                  onChange={(e) => setFormat(e.target.value as OutputFormat)}
-                  disabled={runState === "running"}
-                >
-                  <option value="flac">FLAC</option>
-                  <option value="wav">WAV</option>
-                </select>
+                {operation === "transcribe" ? (
+                  <select
+                    value={transcriptFormat}
+                    onChange={(e) =>
+                      setTranscriptFormat(e.target.value as TranscriptFormat)
+                    }
+                    disabled={runState === "running"}
+                  >
+                    <option value="txt">TXT — Текст з таймкодами</option>
+                    <option value="srt">SRT — Субтитри</option>
+                    <option value="json">JSON — Структурований</option>
+                  </select>
+                ) : (
+                  <select
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value as OutputFormat)}
+                    disabled={runState === "running"}
+                  >
+                    <option value="flac">FLAC</option>
+                    <option value="wav">WAV</option>
+                  </select>
+                )}
               </div>
               <div className="field filename">
                 <label>Filename</label>
@@ -557,7 +902,9 @@ function App() {
                     onChange={(e) => setOutputName(e.target.value)}
                     disabled={runState === "running"}
                   />
-                  <span>.{format}</span>
+                  <span>
+                    .{operation === "transcribe" ? transcriptFormat : format}
+                  </span>
                 </div>
               </div>
             </div>
@@ -577,7 +924,36 @@ function App() {
                 </button>
               </div>
             </div>
-            {format === "flac" ? (
+            {operation === "transcribe" ? (
+              <div className="transcribe-output-note">
+                <FileText size={15} />
+                <span>
+                  {mergeOutputs ? (
+                    <>
+                      Буде збережено <strong>{files.length}</strong>{" "}
+                      {files.length === 1
+                        ? "окремий файл"
+                        : "окремих файлів для кожної доріжки"}{" "}
+                      та спільний об&apos;єднаний файл{" "}
+                      <strong>
+                        {outputName.trim() || "combined"}.{transcriptFormat}
+                      </strong>
+                      .
+                    </>
+                  ) : (
+                    <>
+                      За замовчуванням буде збережено{" "}
+                      <strong>{files.length}</strong>{" "}
+                      {files.length === 1
+                        ? "окремий файл транскрипції"
+                        : "окремих файлів транскрипції"}{" "}
+                      (по одному на кожну доріжку/мовця з префіксом{" "}
+                      <strong>{outputName.trim() || "combined"}</strong>).
+                    </>
+                  )}
+                </span>
+              </div>
+            ) : format === "flac" ? (
               <div className="field compression">
                 <div className="label-line">
                   <label>FLAC compression</label>
@@ -612,52 +988,56 @@ function App() {
           </section>
         </div>
 
-        <section className="panel advanced">
-          <button
-            className="advanced-toggle"
-            onClick={() => setAdvancedOpen(!advancedOpen)}
-          >
-            <SlidersHorizontal />
-            <div>
-              <strong>Advanced audio settings</strong>
-              <small>Optional output resampling and channel layout</small>
-            </div>
-            <ChevronDown className={advancedOpen ? "open" : ""} />
-          </button>
-          {advancedOpen && (
-            <div className="advanced-body">
-              <div className="field">
-                <label>Sample rate</label>
-                <select
-                  value={sampleRate ?? ""}
-                  onChange={(e) =>
-                    setSampleRate(
-                      e.target.value ? Number(e.target.value) : null,
-                    )
-                  }
-                >
-                  <option value="">Auto</option>
-                  <option value="44100">44,100 Hz</option>
-                  <option value="48000">48,000 Hz</option>
-                  <option value="96000">96,000 Hz</option>
-                </select>
+        {operation !== "transcribe" && (
+          <section className="panel advanced">
+            <button
+              className="advanced-toggle"
+              onClick={() => setAdvancedOpen(!advancedOpen)}
+            >
+              <SlidersHorizontal />
+              <div>
+                <strong>Advanced audio settings</strong>
+                <small>Optional output resampling and channel layout</small>
               </div>
-              <div className="field">
-                <label>Channels</label>
-                <select
-                  value={channels ?? ""}
-                  onChange={(e) =>
-                    setChannels(e.target.value ? Number(e.target.value) : null)
-                  }
-                >
-                  <option value="">Auto</option>
-                  <option value="1">Mono</option>
-                  <option value="2">Stereo</option>
-                </select>
+              <ChevronDown className={advancedOpen ? "open" : ""} />
+            </button>
+            {advancedOpen && (
+              <div className="advanced-body">
+                <div className="field">
+                  <label>Sample rate</label>
+                  <select
+                    value={sampleRate ?? ""}
+                    onChange={(e) =>
+                      setSampleRate(
+                        e.target.value ? Number(e.target.value) : null,
+                      )
+                    }
+                  >
+                    <option value="">Auto</option>
+                    <option value="44100">44,100 Hz</option>
+                    <option value="48000">48,000 Hz</option>
+                    <option value="96000">96,000 Hz</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Channels</label>
+                  <select
+                    value={channels ?? ""}
+                    onChange={(e) =>
+                      setChannels(
+                        e.target.value ? Number(e.target.value) : null,
+                      )
+                    }
+                  >
+                    <option value="">Auto</option>
+                    <option value="1">Mono</option>
+                    <option value="2">Stereo</option>
+                  </select>
+                </div>
               </div>
-            </div>
-          )}
-        </section>
+            )}
+          </section>
+        )}
 
         {(runState !== "idle" || failure) && (
           <section className={`panel progress-panel ${runState}`}>
@@ -677,12 +1057,20 @@ function App() {
                 <span className="eyebrow">PROCESSING STATUS</span>
                 <h2>
                   {runState === "running"
-                    ? "Processing audio…"
+                    ? operation === "transcribe"
+                      ? "Transcribing audio…"
+                      : "Processing audio…"
                     : runState === "success"
-                      ? "Processing complete"
+                      ? operation === "transcribe"
+                        ? "Transcription complete"
+                        : "Processing complete"
                       : runState === "cancelled"
-                        ? "Processing cancelled"
-                        : "Processing failed"}
+                        ? operation === "transcribe"
+                          ? "Transcription cancelled"
+                          : "Processing cancelled"
+                        : operation === "transcribe"
+                          ? "Transcription failed"
+                          : "Processing failed"}
                 </h2>
               </div>
             </div>
@@ -721,12 +1109,45 @@ function App() {
               </>
             )}
             {result && (
-              <p className="success-path" title={result.outputPath}>
-                {result.usedStreamCopy ? "Stream copied" : "Encoded"} to{" "}
-                {result.outputPath}
-              </p>
+              <>
+                {result.individualOutputs?.length ? (
+                  !result.individualOutputs.includes(result.outputPath) && (
+                    <p className="success-path" title={result.outputPath}>
+                      Merged transcript saved to {result.outputPath}
+                    </p>
+                  )
+                ) : (
+                  <p className="success-path" title={result.outputPath}>
+                    {result.usedStreamCopy ? "Stream copied to" : "Encoded to"}{" "}
+                    {result.outputPath}
+                  </p>
+                )}
+                {result.individualOutputs &&
+                  result.individualOutputs.length > 0 && (
+                    <div className="individual-outputs-list">
+                      <strong>
+                        Окремі файли доріжок ({result.individualOutputs.length}
+                        ):
+                      </strong>
+                      <ul>
+                        {result.individualOutputs.map((path) => (
+                          <li key={path} title={path}>
+                            {path}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                {result.transcriptPreview && (
+                  <TranscriptPreview preview={result.transcriptPreview} />
+                )}
+              </>
             )}
             {failure && <ErrorDetails failure={failure} />}
+            {(liveLogs.length > 0 ||
+              (runState === "running" && operation === "transcribe")) && (
+              <LiveLogPanel logs={liveLogs} running={runState === "running"} />
+            )}
             {command.length > 0 && settings.showCommand && (
               <CommandDetails command={command} />
             )}
@@ -735,24 +1156,46 @@ function App() {
 
         <div className="action-bar">
           <div>
-            <span>Estimated output length</span>
+            <span>
+              {operation === "transcribe"
+                ? "Total audio to transcribe"
+                : "Estimated output length"}
+            </span>
             <strong>
               {formatDuration(totalDuration(files, operation, mixDuration))}
             </strong>
           </div>
           {runState === "running" ? (
-            <button className="button cancel" onClick={cancel}>
-              <CircleStop />
-              Cancel processing
+            <button
+              className="button cancel"
+              onClick={cancel}
+              disabled={cancelling}
+            >
+              {cancelling ? <LoaderCircle className="spin" /> : <CircleStop />}
+              {cancelling
+                ? "Скасування…"
+                : operation === "transcribe"
+                  ? "Cancel transcription"
+                  : "Cancel processing"}
             </button>
           ) : (
             <button
               className="button start"
               onClick={start}
-              disabled={!valid || probing}
+              disabled={!valid || probing || startingJob}
             >
-              <AudioLines />
-              Start processing
+              {startingJob ? (
+                <LoaderCircle className="spin" />
+              ) : operation === "transcribe" ? (
+                <Mic />
+              ) : (
+                <AudioLines />
+              )}
+              {startingJob
+                ? "Запуск…"
+                : operation === "transcribe"
+                  ? "Start transcription"
+                  : "Start processing"}
             </button>
           )}
         </div>
@@ -762,12 +1205,18 @@ function App() {
         <SettingsDialog
           settings={settings}
           ffmpeg={ffmpeg}
+          saving={savingSettings}
           onClose={() => setSettingsOpen(false)}
           onSave={async (next, nextStatus) => {
-            setSettings(next);
-            setFfmpeg(nextStatus);
-            await invoke("save_settings", { value: next });
-            setSettingsOpen(false);
+            setSavingSettings(true);
+            try {
+              setSettings(next);
+              setFfmpeg(nextStatus);
+              await invoke("save_settings", { value: next });
+              setSettingsOpen(false);
+            } finally {
+              setSavingSettings(false);
+            }
           }}
         />
       )}
@@ -815,6 +1264,88 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function LiveLogPanel({ logs, running }: { logs: string[]; running: boolean }) {
+  const boxRef = useRef<HTMLPreElement | null>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  useEffect(() => {
+    if (autoScroll && boxRef.current) {
+      boxRef.current.scrollTop = boxRef.current.scrollHeight;
+    }
+  }, [logs, autoScroll]);
+
+  const handleScroll = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+    if (nearBottom !== autoScroll) {
+      setAutoScroll(nearBottom);
+    }
+  };
+
+  const content = logs.length
+    ? logs.join("\n")
+    : running
+      ? "Очікування запуску воркера транскрибції…"
+      : "";
+
+  return (
+    <div className="live-log-panel">
+      <div className="live-log-header">
+        <strong>Лог транскрибції в реальному часі</strong>
+        <div className="live-log-controls">
+          <label>
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => setAutoScroll(e.target.checked)}
+            />
+            <span>Автопрокрутка</span>
+          </label>
+          {logs.length > 0 && (
+            <button
+              type="button"
+              className="button secondary compact"
+              onClick={() => navigator.clipboard.writeText(logs.join("\n"))}
+            >
+              Копіювати лог
+            </button>
+          )}
+        </div>
+      </div>
+      <pre ref={boxRef} className="live-log-box" onScroll={handleScroll}>
+        {content}
+      </pre>
+    </div>
+  );
+}
+
+function TranscriptPreview({ preview }: { preview: string }) {
+  const [openPreview, setOpenPreview] = useState(true);
+  return (
+    <div className="transcript-preview">
+      <button
+        className="text-button"
+        onClick={() => setOpenPreview(!openPreview)}
+      >
+        <ChevronDown className={openPreview ? "open" : ""} />
+        Попередній перегляд транскрипту
+      </button>
+      {openPreview && (
+        <>
+          <pre>{preview}</pre>
+          <button
+            className="button secondary compact"
+            onClick={() => navigator.clipboard.writeText(preview)}
+          >
+            Copy transcript
+          </button>
+        </>
       )}
     </div>
   );
@@ -881,11 +1412,13 @@ function CommandDetails({ command }: { command: string[] }) {
 function SettingsDialog({
   settings,
   ffmpeg,
+  saving,
   onClose,
   onSave,
 }: {
   settings: AppSettings;
   ffmpeg: FFmpegStatus;
+  saving: boolean;
   onClose: () => void;
   onSave: (settings: AppSettings, status: FFmpegStatus) => Promise<void>;
 }) {
@@ -1012,13 +1545,20 @@ function SettingsDialog({
             <span>Remember last output folder</span>
           </label>
         </div>
+        <div className="settings-section">
+          <label>AI Model &amp; Attribution</label>
+          <div className="settings-attribution">
+            <code>{PARAKEET_MODEL_ID}</code>
+            <span>{PARAKEET_ATTRIBUTION}</span>
+          </div>
+        </div>
         <div className="modal-actions">
-          <button className="button ghost" onClick={onClose}>
+          <button className="button ghost" onClick={onClose} disabled={saving}>
             Cancel
           </button>
           <button
             className="button primary"
-            disabled={!status.found}
+            disabled={!status.found || checking || saving}
             onClick={() =>
               onSave(
                 draft.ffmpegPath && status.source !== "custom"
@@ -1028,7 +1568,8 @@ function SettingsDialog({
               )
             }
           >
-            Save settings
+            {saving && <LoaderCircle size={15} className="spin" />}
+            {saving ? "Збереження…" : "Save settings"}
           </button>
         </div>
       </div>

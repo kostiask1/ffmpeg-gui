@@ -110,6 +110,14 @@ The preparation script downloads an immutable BtbN Windows x64 LGPL static build
 
 The installer includes the build's LGPLv3 license and `NOTICE.txt` with the exact build release, FFmpeg source revision, and build-script links. Audio Forge invokes the unmodified executables as separate processes; it does not link FFmpeg libraries into the application.
 
+## Transcription model & attribution
+
+Local speech-to-text transcription uses [`ihnatov-yuri/parakeet-tdt-0.6b-v3-uk`](https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk):
+
+> Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)
+
+The Windows NSIS installer checks whether the model is already cached locally and, if missing, runs `third-party/parakeet/ensure-parakeet-model.ps1` to download and prepare it alongside `third-party/parakeet/NOTICE.txt`.
+
 ## Auto concatenation decision
 
 Auto mode chooses concat demuxer stream copy only when output is FLAC and every input audio stream is FLAC with the same sample rate, channel count, channel layout, and sample format. After copying, Audio Forge updates the output FLAC STREAMINFO sample count and clears the now-inapplicable per-file MD5 without decoding the audio. Otherwise it uses FFmpeg's concat filter and re-encodes with the chosen output settings. Explicit Stream Copy returns a validation error rather than silently copying incompatible inputs.

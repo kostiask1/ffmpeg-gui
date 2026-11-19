@@ -1,4 +1,9 @@
-import type { AudioFileInfo, MixDuration, Operation } from "./types";
+import type {
+  AudioFileInfo,
+  MixDuration,
+  Operation,
+  TranscriptionLanguage,
+} from "./types";
 
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
@@ -29,7 +34,7 @@ export function totalDuration(
   mix: MixDuration,
 ): number {
   if (!files.length) return 0;
-  if (operation === "concatenate")
+  if (operation === "concatenate" || operation === "transcribe")
     return files.reduce((sum, file) => sum + file.duration, 0);
   if (mix === "shortest")
     return Math.min(...files.map((file) => file.duration));
@@ -44,4 +49,47 @@ export function parentDirectory(path: string): string {
 
 export function quoteCommandPart(value: string): string {
   return /[\s"&|<>^]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+export function dedupeIncomingPaths(
+  paths: string[],
+  existing: AudioFileInfo[],
+  pending: ReadonlySet<string>,
+): string[] {
+  const seen = new Set<string>(
+    existing.map((file) => file.path.toLocaleLowerCase()),
+  );
+  for (const item of pending) {
+    seen.add(item.toLocaleLowerCase());
+  }
+  const unique: string[] = [];
+  for (const raw of paths) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(trimmed);
+  }
+  return unique;
+}
+
+export function mergeUniqueFiles(
+  current: AudioFileInfo[],
+  added: AudioFileInfo[],
+  defaultLanguage: TranscriptionLanguage,
+): AudioFileInfo[] {
+  const seen = new Set(current.map((file) => file.path.toLocaleLowerCase()));
+  const next = [...current];
+  for (const item of added) {
+    const key = item.path.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push({
+      ...item,
+      speaker: item.speaker || `Мовець ${next.length + 1}`,
+      language: defaultLanguage,
+    });
+  }
+  return next;
 }

@@ -5,6 +5,7 @@ mod flac;
 mod models;
 mod progress;
 mod settings;
+mod transcribe;
 
 use commands::ProcessState;
 use tauri::{Emitter, Manager, WindowEvent};

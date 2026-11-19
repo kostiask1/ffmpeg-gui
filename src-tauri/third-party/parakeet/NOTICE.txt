@@ -1,0 +1,15 @@
+Audio Forge includes support for local speech transcription using the
+ihnatov-yuri/parakeet-tdt-0.6b-v3-uk automatic speech recognition model.
+
+Attribution:
+Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)
+
+Model repository:
+https://huggingface.co/ihnatov-yuri/parakeet-tdt-0.6b-v3-uk
+
+Base model:
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+
+License:
+Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/

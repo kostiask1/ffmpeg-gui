@@ -14,3 +14,6 @@ mod flac;
 
 #[path = "../src/progress.rs"]
 mod progress;
+
+#[path = "../src/transcribe.rs"]
+mod transcribe;

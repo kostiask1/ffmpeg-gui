@@ -1,8 +1,11 @@
-export type Operation = "mix" | "concatenate" | "multichannel";
+export type Operation = "mix" | "concatenate" | "transcribe" | "multichannel";
 export type MixDuration = "longest" | "shortest" | "first";
 export type ConcatMode = "auto" | "copy" | "reencode";
 export type OutputFormat = "flac" | "wav";
 export type WavDepth = "pcm_s16le" | "pcm_s24le" | "pcm_f32le";
+export type TranscriptionLanguage =
+  "uk" | "auto" | "en" | "uk_strict" | "pl" | "de" | "fr" | "es";
+export type TranscriptFormat = "txt" | "srt" | "json";
 
 export interface AudioFileInfo {
   name: string;
@@ -18,6 +21,8 @@ export interface AudioFileInfo {
   size: number;
   volume: number;
   muted: boolean;
+  speaker: string;
+  language: TranscriptionLanguage;
 }
 
 export interface AppSettings {
@@ -50,6 +55,12 @@ export interface ProcessingJob {
     sampleRate: number | null;
     channels: number | null;
   };
+  transcription: {
+    modelId: string;
+    defaultLanguage: TranscriptionLanguage;
+    format: TranscriptFormat;
+    mergeOutputs: boolean;
+  };
   outputDirectory: string;
   outputName: string;
   replaceExisting: boolean;
@@ -71,11 +82,19 @@ export interface ProcessingStarted {
   usedStreamCopy: boolean;
 }
 
+export interface ProcessingLog {
+  jobId: string;
+  line: string;
+  stream: "stdout" | "stderr" | string;
+}
+
 export interface ProcessingFinished {
   jobId: string;
   outputPath: string;
   command: string[];
   usedStreamCopy: boolean;
+  individualOutputs?: string[];
+  transcriptPreview?: string;
 }
 
 export interface ProcessingFailed {

@@ -15,7 +15,14 @@ pub struct BuiltCommand {
 }
 
 fn validate(executable: &Path) -> Option<String> {
-    let output = Command::new(executable).arg("-version").output().ok()?;
+    let mut cmd = Command::new(executable);
+    cmd.arg("-version").stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -307,6 +314,8 @@ mod tests {
             size: 1,
             volume: 1.0,
             muted: false,
+            speaker: String::new(),
+            language: "uk".into(),
         }
     }
 
@@ -335,6 +344,7 @@ mod tests {
                 sample_rate: None,
                 channels: None,
             },
+            transcription: crate::models::TranscriptionSettings::default(),
             output_directory: "C:\\out".into(),
             output_name: "result".into(),
             replace_existing: false,

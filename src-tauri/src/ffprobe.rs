@@ -30,16 +30,23 @@ struct ProbeFormat {
 }
 
 pub fn probe(executable: &Path, path: &Path) -> Result<AudioFileInfo, String> {
-    let output = Command::new(executable)
-        .args([
-            "-v",
-            "error",
-            "-show_streams",
-            "-show_format",
-            "-of",
-            "json",
-        ])
-        .arg(path)
+    let mut cmd = Command::new(executable);
+    cmd.args([
+        "-v",
+        "error",
+        "-show_streams",
+        "-show_format",
+        "-of",
+        "json",
+    ])
+    .arg(path)
+    .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let output = cmd
         .output()
         .map_err(|error| format!("Could not start ffprobe: {error}"))?;
     if !output.status.success() {
@@ -97,6 +104,8 @@ fn parse_probe(path: &Path, json: &[u8]) -> Result<AudioFileInfo, String> {
             .unwrap_or(0),
         volume: 1.0,
         muted: false,
+        speaker: String::new(),
+        language: "uk".into(),
     })
 }
 

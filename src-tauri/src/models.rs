@@ -18,10 +18,26 @@ pub struct AudioFileInfo {
     pub volume: f64,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub speaker: String,
+    #[serde(default = "default_track_language")]
+    pub language: String,
 }
 
 fn default_track_volume() -> f64 {
     1.0
+}
+
+fn default_track_language() -> String {
+    "uk".into()
+}
+
+fn default_model_id() -> String {
+    "ihnatov-yuri/parakeet-tdt-0.6b-v3-uk".into()
+}
+
+fn default_transcript_format() -> String {
+    "txt".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,9 +82,35 @@ pub struct ProcessingJob {
     pub mix: MixSettings,
     pub concat: ConcatSettings,
     pub encoding: EncodingSettings,
+    #[serde(default)]
+    pub transcription: TranscriptionSettings,
     pub output_directory: String,
     pub output_name: String,
     pub replace_existing: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionSettings {
+    #[serde(default = "default_model_id")]
+    pub model_id: String,
+    #[serde(default = "default_track_language")]
+    pub default_language: String,
+    #[serde(default = "default_transcript_format")]
+    pub format: String,
+    #[serde(default)]
+    pub merge_outputs: bool,
+}
+
+impl Default for TranscriptionSettings {
+    fn default() -> Self {
+        Self {
+            model_id: default_model_id(),
+            default_language: default_track_language(),
+            format: default_transcript_format(),
+            merge_outputs: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,11 +155,23 @@ pub struct ProcessingStarted {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProcessingLog {
+    pub job_id: String,
+    pub line: String,
+    pub stream: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessingFinished {
     pub job_id: String,
     pub output_path: String,
     pub command: Vec<String>,
     pub used_stream_copy: bool,
+    #[serde(default)]
+    pub individual_outputs: Vec<String>,
+    #[serde(default)]
+    pub transcript_preview: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

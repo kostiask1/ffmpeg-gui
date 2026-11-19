@@ -26,8 +26,14 @@
     "active": true,
     "targets": "all",
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
-    "resources": ["third-party/ffmpeg/*"],
+    "resources": ["third-party/ffmpeg/*", "third-party/parakeet/*"],
+    "copyright": "Yuri Ihnatov (https://ihnatov.nl), fine-tuned from NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0)",
     "shortDescription": "Mix and concatenate large audio files locally",
-    "category": "Music"
+    "category": "Music",
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
   }
 }
